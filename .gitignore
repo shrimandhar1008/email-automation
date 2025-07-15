@@ -1,1 +1,4 @@
 .env
+token.pickle
+.idea/
+email_llm_env/

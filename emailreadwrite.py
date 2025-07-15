@@ -11,14 +11,21 @@ import datetime
 from pandas.tseries.offsets import MonthEnd
 from bs4 import BeautifulSoup
 import pandas as pd
+import os
+from langchain_google_vertexai import ChatVertexAI, VertexAI
+from langchain_community.vectorstores import Chroma
+# from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+from langchain import hub
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain.chains import create_retrieval_chain
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain.chains import LLMChain
 from dotenv import load_dotenv
 import os
-from langchain_google_genai import GoogleGenerativeAI
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-import google.generativeai as genai
 
-genai.configure(api_key=GEMINI_API_KEY)
 
 # If modifying these scopes, delete the file token.pickle.
 # SCOPES = ['https://www.googleapis.com/auth/gmail.readonly',
@@ -94,10 +101,6 @@ class ExtractTransactions:
                             pass
                     except:
                         plain_text = ''
-                # else:
-                #     if payload['mimeType'] == 'text/html':
-                #         data = payload['body']['data']
-                #         plain_text = base64.urlsafe_b64decode(data).decode('utf-8')
 
                 emails.append({
                     'id': message['id'],
@@ -113,61 +116,28 @@ class ExtractTransactions:
             print(f'An error occurred: {error}')
             return []
 
-
-    # def send_email(self, service, to_email, subject, body):
-    #     """Send an email using Gmail API"""
-    #     try:
-    #         # Create message
-    #         message = MIMEMultipart()
-    #         message['to'] = to_email
-    #         message['subject'] = subject
-    #
-    #         # Add body to email
-    #         message.attach(MIMEText(body, 'plain'))
-    #
-    #         # Encode the message
-    #         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
-    #
-    #         # Send the message
-    #         send_message = service.users().messages().send(
-    #             userId='me', body={'raw': raw_message}).execute()
-    #
-    #         print(f'Message sent successfully. Message ID: {send_message["id"]}')
-    #         return send_message
-    #
-    #     except Exception as error:
-    #         print(f'An error occurred: {error}')
-    #         return None
-
-
     def ExtractInfo(self):
         # Authenticate Gmail
-        for model in genai.list_models():
-            print(f"Model name: {model.name}")
-            print(f"  Supported versions: {model.supported_generation_methods}")
         service = self.authenticate_gmail()
-        llm = GoogleGenerativeAI(model="models/gemini-1.5-pro-latest", google_api_key=GEMINI_API_KEY)
+        prompt_template = PromptTemplate(input_variable=["transaction_text"],
+                                         template=("""Return the information about the transaction mentioned in the following text.
+        Your response should be structured in the JSON format and strictly based on given piece of text.
+        {transaction_text}"""),)
+        llm  = VertexAI(model_name=os.environ["GEN_MODEL"], project=os.environ["PROJECT_ID"], location=os.environ["REGION"],
+                        temperature=0.2, prompt=prompt_template)
 
-
-        # Confirm connection
-        status = llm.invoke("who is president of usa?")
-
+        transaction_chain = LLMChain(
+            llm=llm,
+            prompt=prompt_template
+        )
         # Read recent emails
         print("Reading recent emails...")
         date = datetime.datetime.now() - MonthEnd(2)
         date = date.strftime('%Y/%m/%d')
-        emails = self.read_emails(service, query=f'after:{date} is:read from:alerts@hdfcbank.net', max_results=100)
+        emails = self.read_emails(service, query=f'after:{date} is:read from:alerts@hdfcbank.net', max_results=5)
         email_data = pd.DataFrame(emails)
-
-
-        # # Send an email
-        # print("\nSending email...")
-        # send_email(
-        #     service,
-        #     'mshrimandhar@gmail.com',
-        #     'Test Subject',
-        #     'This is a test email sent using Gmail API!'
-        # )
+        email_data['details'] = email_data["body"].apply(lambda x: transaction_chain.run(transaction_text=x))
+        email_data.to_csv("MonthlyTransactionDetails.csv")
 
 
 if __name__ == '__main__':
